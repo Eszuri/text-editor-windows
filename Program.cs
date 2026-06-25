@@ -50,7 +50,7 @@ namespace Text_Editor
             }
         }
 
-        private static System.Drawing.Drawing2D.GraphicsPath RoundedRect(Rectangle bounds, int radius)
+        public static System.Drawing.Drawing2D.GraphicsPath RoundedRect(Rectangle bounds, int radius)
         {
             int d = radius * 2;
             var path = new System.Drawing.Drawing2D.GraphicsPath();
@@ -96,6 +96,75 @@ namespace Text_Editor
         public override Color ButtonCheckedHighlightBorder => Color.Transparent;
     }
 
+    public class LightToolStripRenderer : ToolStripProfessionalRenderer
+    {
+        public LightToolStripRenderer() : base(new LightColorTable()) 
+        { 
+            this.RoundedEdges = false;
+        }
+
+        protected override void OnRenderButtonBackground(ToolStripItemRenderEventArgs e)
+        {
+            Rectangle rect = new Rectangle(Point.Empty, e.Item.Size);
+            int radius = 5;
+
+            if (e.Item is ToolStripButton btn && btn.Checked)
+            {
+                using (var brush = new SolidBrush(Color.FromArgb(200, 200, 200)))
+                using (var path = DarkToolStripRenderer.RoundedRect(rect, radius))
+                {
+                    e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                    e.Graphics.FillPath(brush, path);
+                }
+            }
+            else if (e.Item.Selected || e.Item.Pressed)
+            {
+                Color bgColor = e.Item.Pressed 
+                    ? Color.FromArgb(200, 200, 200) 
+                    : Color.FromArgb(220, 220, 220);
+                using (var brush = new SolidBrush(bgColor))
+                using (var path = DarkToolStripRenderer.RoundedRect(rect, radius))
+                {
+                    e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                    e.Graphics.FillPath(brush, path);
+                }
+            }
+        }
+
+        protected override void OnRenderToolStripBorder(ToolStripRenderEventArgs e)
+        {
+            using (var pen = new Pen(Color.FromArgb(200, 200, 200), 1))
+            {
+                e.Graphics.DrawLine(pen, 0, e.ToolStrip.Height - 1, e.ToolStrip.Width, e.ToolStrip.Height - 1);
+            }
+        }
+        
+        protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e)
+        {
+            int margin = 10;
+            using (var pen = new Pen(Color.FromArgb(200, 200, 200), 1))
+            {
+                e.Graphics.DrawLine(pen, e.Item.Width / 2, margin, e.Item.Width / 2, e.Item.Height - margin);
+            }
+        }
+    }
+
+    public class LightColorTable : ProfessionalColorTable
+    {
+        public override Color ToolStripGradientBegin => Color.FromArgb(245, 245, 245);
+        public override Color ToolStripGradientMiddle => Color.FromArgb(245, 245, 245);
+        public override Color ToolStripGradientEnd => Color.FromArgb(245, 245, 245);
+        public override Color ToolStripBorder => Color.Transparent;
+        public override Color MenuItemSelected => Color.FromArgb(220, 220, 220);
+        public override Color MenuItemBorder => Color.Transparent;
+        public override Color ButtonSelectedHighlight => Color.FromArgb(220, 220, 220);
+        public override Color ButtonSelectedHighlightBorder => Color.Transparent;
+        public override Color ButtonPressedHighlight => Color.FromArgb(200, 200, 200);
+        public override Color ButtonPressedHighlightBorder => Color.Transparent;
+        public override Color ButtonCheckedHighlight => Color.FromArgb(200, 200, 200);
+        public override Color ButtonCheckedHighlightBorder => Color.Transparent;
+    }
+
     public class MainForm : Form
     {
         private RichTextBox _editBox;
@@ -111,6 +180,7 @@ namespace Text_Editor
         private bool   _modified     = false;
         private bool   _wordWrap     = true;
 
+        private bool   _isDarkTheme  = true;
         private bool   _ignoreChange = false;
 
         private readonly Stack<TextState> _undoStack = new Stack<TextState>();
@@ -134,14 +204,9 @@ namespace Text_Editor
             this.Text            = "Untitled - Text Editor";
             this.Size            = new Size(900, 600);
             this.MinimumSize     = new Size(400, 300);
-            this.BackColor       = Color.FromArgb(30, 30, 30);
-            this.ForeColor       = Color.White;
 
             _toolbar = new ToolStrip { 
                 GripStyle = ToolStripGripStyle.Hidden, 
-                BackColor = Color.FromArgb(45, 45, 48), 
-                ForeColor = Color.White,
-                Renderer = new DarkToolStripRenderer(),
                 AutoSize = false,
                 Height = 45
             };
@@ -166,6 +231,10 @@ namespace Text_Editor
             };
             _wordWrapBtn.Click += (s, e) => ToggleWordWrap();
             _toolbar.Items.Add(_wordWrapBtn);
+            
+            var settingsBtn = MakeTButton("Settings", OnSettings);
+            _toolbar.Items.Add(settingsBtn);
+
             this.Controls.Add(_toolbar);
 
             _editBox = new RichTextBox
@@ -177,8 +246,6 @@ namespace Text_Editor
                 Font          = GetDefaultFont(),
                 HideSelection = false,
                 DetectUrls    = false,
-                BackColor     = Color.FromArgb(30, 30, 30),
-                ForeColor     = Color.White,
                 BorderStyle   = BorderStyle.None,
             };
             _editBox.TextChanged   += OnTextChanged;
@@ -188,7 +255,7 @@ namespace Text_Editor
             editorPanel.Controls.Add(_editBox);
             this.Controls.Add(editorPanel);
 
-            _statusBar   = new StatusStrip { BackColor = Color.FromArgb(45, 45, 48), ForeColor = Color.White };
+            _statusBar   = new StatusStrip();
             _statusPart0 = new ToolStripStatusLabel("Line 1, Col 1") { AutoSize = true };
             _statusPart1 = new ToolStripStatusLabel("0 lines, 0 chars") { AutoSize = true };
             _statusPart2 = new ToolStripStatusLabel("UTF-8") { AutoSize = true };
@@ -203,6 +270,36 @@ namespace Text_Editor
             this.KeyDown   += OnKeyDown;
 
             editorPanel.BringToFront();
+            
+            ApplyTheme();
+        }
+
+        public void ApplyTheme()
+        {
+            if (_isDarkTheme)
+            {
+                this.BackColor       = Color.FromArgb(30, 30, 30);
+                this.ForeColor       = Color.White;
+                _toolbar.BackColor   = Color.FromArgb(45, 45, 48);
+                _toolbar.ForeColor   = Color.White;
+                _toolbar.Renderer    = new DarkToolStripRenderer();
+                _editBox.BackColor   = Color.FromArgb(30, 30, 30);
+                _editBox.ForeColor   = Color.White;
+                _statusBar.BackColor = Color.FromArgb(45, 45, 48);
+                _statusBar.ForeColor = Color.White;
+            }
+            else
+            {
+                this.BackColor       = SystemColors.Control;
+                this.ForeColor       = SystemColors.ControlText;
+                _toolbar.BackColor   = Color.FromArgb(245, 245, 245);
+                _toolbar.ForeColor   = SystemColors.ControlText;
+                _toolbar.Renderer    = new LightToolStripRenderer();
+                _editBox.BackColor   = SystemColors.Window;
+                _editBox.ForeColor   = SystemColors.WindowText;
+                _statusBar.BackColor = Color.FromArgb(245, 245, 245);
+                _statusBar.ForeColor = SystemColors.ControlText;
+            }
         }
 
         private static ToolStripButton MakeTButton(string text, EventHandler handler)
@@ -432,6 +529,20 @@ namespace Text_Editor
         private void OnPaste(object sender, EventArgs e)     => _editBox.Paste();
         private void OnSelectAll(object sender, EventArgs e) => _editBox.SelectAll();
 
+        private void OnSettings(object sender, EventArgs e)
+        {
+            using var dlg = new SettingsDialog(_isDarkTheme, _editBox.Font);
+            if (dlg.ShowDialog(this) == DialogResult.OK)
+            {
+                _editBox.Font = dlg.SelectedFont;
+                if (_isDarkTheme != dlg.IsDarkTheme)
+                {
+                    _isDarkTheme = dlg.IsDarkTheme;
+                    ApplyTheme();
+                }
+            }
+        }
+
         private void ToggleWordWrap()
         {
             _wordWrap            = !_wordWrap;
@@ -446,6 +557,7 @@ namespace Text_Editor
         {
             string initial = _editBox.SelectionLength > 0 ? _editBox.SelectedText : string.Empty;
             using var dlg = new FindDialog(initial);
+            dlg.ApplyTheme(_isDarkTheme);
             dlg.FindNext += (query) =>
             {
                 if (string.IsNullOrEmpty(query)) return;
@@ -478,6 +590,7 @@ namespace Text_Editor
         private void OnGotoLine(object sender, EventArgs e)
         {
             using var dlg = new GotoLineDialog();
+            dlg.ApplyTheme(_isDarkTheme);
             if (dlg.ShowDialog(this) != DialogResult.OK) return;
 
             int line = dlg.LineNumber - 1;
@@ -536,6 +649,99 @@ namespace Text_Editor
         }
     }
 
+    public class SettingsDialog : Form
+    {
+        public bool IsDarkTheme { get; private set; }
+        public Font SelectedFont { get; private set; }
+
+        public SettingsDialog(bool currentDarkTheme, Font currentFont)
+        {
+            IsDarkTheme = currentDarkTheme;
+            SelectedFont = currentFont;
+
+            this.Text            = "Settings";
+            this.FormBorderStyle = FormBorderStyle.FixedDialog;
+            this.MaximizeBox     = false;
+            this.MinimizeBox     = false;
+            this.ShowInTaskbar   = false;
+            this.StartPosition   = FormStartPosition.CenterParent;
+            this.Size            = new Size(350, 200);
+
+            var lblTheme = new Label { Text = "Theme:", Left = 20, Top = 25, Width = 80 };
+            var cbTheme = new ComboBox { Left = 110, Top = 22, Width = 150, DropDownStyle = ComboBoxStyle.DropDownList };
+            cbTheme.Items.Add("Light");
+            cbTheme.Items.Add("Dark");
+            cbTheme.SelectedIndex = IsDarkTheme ? 1 : 0;
+
+            var lblFont = new Label { Text = "Font:", Left = 20, Top = 65, Width = 80 };
+            var lblFontName = new Label { Text = $"{SelectedFont.Name}, {SelectedFont.Size}pt", Left = 110, Top = 65, Width = 100 };
+            var btnFont = new Button { Text = "Change...", Left = 220, Top = 60, Width = 80 };
+            btnFont.Click += (s, e) =>
+            {
+                using var fd = new FontDialog { Font = SelectedFont, ShowEffects = true };
+                if (fd.ShowDialog(this) == DialogResult.OK)
+                {
+                    SelectedFont = fd.Font;
+                    lblFontName.Text = $"{SelectedFont.Name}, {SelectedFont.Size}pt";
+                }
+            };
+
+            var btnOk = new Button { Text = "OK", Left = 140, Top = 120, Width = 80, DialogResult = DialogResult.OK };
+            var btnCancel = new Button { Text = "Cancel", Left = 230, Top = 120, Width = 80, DialogResult = DialogResult.Cancel };
+
+            btnOk.Click += (s, e) => { IsDarkTheme = cbTheme.SelectedIndex == 1; };
+
+            this.AcceptButton = btnOk;
+            this.CancelButton = btnCancel;
+            this.Controls.AddRange(new Control[] { lblTheme, cbTheme, lblFont, lblFontName, btnFont, btnOk, btnCancel });
+
+            ApplyThemeToDialog(this, IsDarkTheme);
+        }
+
+        public static void ApplyThemeToDialog(Form form, bool isDark)
+        {
+            if (isDark)
+            {
+                form.BackColor = Color.FromArgb(30, 30, 30);
+                form.ForeColor = Color.White;
+                foreach (Control c in form.Controls)
+                {
+                    if (c is TextBox || c is ComboBox)
+                    {
+                        c.BackColor = Color.FromArgb(45, 45, 48);
+                        c.ForeColor = Color.White;
+                    }
+                    else if (c is Button b)
+                    {
+                        b.BackColor = Color.FromArgb(60, 60, 65);
+                        b.ForeColor = Color.White;
+                        b.FlatStyle = FlatStyle.Flat;
+                        b.FlatAppearance.BorderSize = 0;
+                    }
+                }
+            }
+            else
+            {
+                form.BackColor = SystemColors.Control;
+                form.ForeColor = SystemColors.ControlText;
+                foreach (Control c in form.Controls)
+                {
+                    if (c is TextBox || c is ComboBox)
+                    {
+                        c.BackColor = SystemColors.Window;
+                        c.ForeColor = SystemColors.WindowText;
+                    }
+                    else if (c is Button b)
+                    {
+                        b.BackColor = SystemColors.Control;
+                        b.ForeColor = SystemColors.ControlText;
+                        b.FlatStyle = FlatStyle.Standard;
+                    }
+                }
+            }
+        }
+    }
+
     public class FindDialog : Form
     {
         public event Action<string> FindNext;
@@ -551,8 +757,6 @@ namespace Text_Editor
             this.ShowInTaskbar   = false;
             this.StartPosition   = FormStartPosition.CenterParent;
             this.Size            = new Size(400, 140);
-            this.BackColor       = Color.FromArgb(30, 30, 30);
-            this.ForeColor       = Color.White;
 
             var label = new Label { Text = "Find what:", Left = 20, Top = 25, Width = 70 };
 
@@ -561,9 +765,6 @@ namespace Text_Editor
                 Left  = 95, Top = 23, Width = 265,
                 Text  = initial,
                 MaxLength = 255,
-                BackColor = Color.FromArgb(45, 45, 48),
-                ForeColor = Color.White,
-                BorderStyle = BorderStyle.FixedSingle,
             };
 
             var btnFind = new Button
@@ -571,11 +772,7 @@ namespace Text_Editor
                 Text         = "Find Next",
                 Left         = 195, Top = 65, Width = 80,
                 DialogResult = DialogResult.None,
-                BackColor = Color.FromArgb(60, 60, 65),
-                ForeColor = Color.White,
-                FlatStyle = FlatStyle.Flat,
             };
-            btnFind.FlatAppearance.BorderSize = 0;
             btnFind.Click += (s, e) => FindNext?.Invoke(_inputBox.Text);
 
             var btnCancel = new Button
@@ -583,16 +780,19 @@ namespace Text_Editor
                 Text         = "Cancel",
                 Left         = 280, Top = 65, Width = 80,
                 DialogResult = DialogResult.Cancel,
-                BackColor = Color.FromArgb(60, 60, 65),
-                ForeColor = Color.White,
-                FlatStyle = FlatStyle.Flat,
             };
-            btnCancel.FlatAppearance.BorderSize = 0;
 
             this.AcceptButton = btnFind;
             this.CancelButton = btnCancel;
             this.Controls.AddRange(new Control[] { label, _inputBox, btnFind, btnCancel });
             _inputBox.Select();
+            
+            // Note: Since this is created from MainForm, we apply theme after initialization.
+        }
+        
+        public void ApplyTheme(bool isDark)
+        {
+            SettingsDialog.ApplyThemeToDialog(this, isDark);
         }
     }
 
@@ -611,8 +811,6 @@ namespace Text_Editor
             this.ShowInTaskbar   = false;
             this.StartPosition   = FormStartPosition.CenterParent;
             this.Size            = new Size(330, 150);
-            this.BackColor       = Color.FromArgb(30, 30, 30);
-            this.ForeColor       = Color.White;
 
             var label = new Label { Text = "Line number:", Left = 20, Top = 25, Width = 85 };
 
@@ -620,9 +818,6 @@ namespace Text_Editor
             {
                 Left     = 115, Top = 23, Width = 175,
                 MaxLength = 10,
-                BackColor = Color.FromArgb(45, 45, 48),
-                ForeColor = Color.White,
-                BorderStyle = BorderStyle.FixedSingle,
             };
             _inputBox.KeyPress += (s, e) =>
             {
@@ -635,11 +830,7 @@ namespace Text_Editor
                 Text         = "Go",
                 Left         = 125, Top = 70, Width = 80,
                 DialogResult = DialogResult.OK,
-                BackColor = Color.FromArgb(60, 60, 65),
-                ForeColor = Color.White,
-                FlatStyle = FlatStyle.Flat,
             };
-            btnGo.FlatAppearance.BorderSize = 0;
             btnGo.Click += (s, e) =>
             {
                 if (int.TryParse(_inputBox.Text, out int n) && n >= 1)
@@ -651,6 +842,11 @@ namespace Text_Editor
             this.AcceptButton = btnGo;
             this.Controls.AddRange(new Control[] { label, _inputBox, btnGo });
             _inputBox.Select();
+        }
+
+        public void ApplyTheme(bool isDark)
+        {
+            SettingsDialog.ApplyThemeToDialog(this, isDark);
         }
     }
 
