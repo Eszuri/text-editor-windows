@@ -259,12 +259,9 @@ namespace Text_Editor
             this.Text            = "Untitled - Text Editor";
             this.MinimumSize     = new Size(400, 300);
 
-            var iconStream = typeof(MainForm).Assembly.GetManifestResourceStream("icon.png");
-            if (iconStream != null)
-            {
-                using var bmp = new Bitmap(iconStream);
-                this.Icon = Icon.FromHandle(bmp.GetHicon());
-            }
+var iconStream = typeof(MainForm).Assembly.GetManifestResourceStream("icon.ico");
+if (iconStream != null) this.Icon = new Icon(iconStream);
+else this.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
 
             _toolbar = new ToolStrip { 
                 GripStyle = ToolStripGripStyle.Hidden, 
