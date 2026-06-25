@@ -21,6 +21,8 @@ namespace Text_Editor
         public bool WordWrap { get; set; } = true;
         public string FontName { get; set; } = "Consolas";
         public float FontSize { get; set; } = 10f;
+        public bool ToolbarVisible { get; set; } = true;
+        public bool RegisterContextMenu { get; set; } = false;
 
         private static readonly string SettingsDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
@@ -247,12 +249,22 @@ namespace Text_Editor
             {
                 LoadFile(args[0]);
             }
+
+            if (_settings.RegisterContextMenu)
+                RegisterContextMenuHandler(true);
         }
 
         private void InitializeUI()
         {
             this.Text            = "Untitled - Text Editor";
             this.MinimumSize     = new Size(400, 300);
+
+            var iconStream = typeof(MainForm).Assembly.GetManifestResourceStream("icon.png");
+            if (iconStream != null)
+            {
+                using var bmp = new Bitmap(iconStream);
+                this.Icon = Icon.FromHandle(bmp.GetHicon());
+            }
 
             _toolbar = new ToolStrip { 
                 GripStyle = ToolStripGripStyle.Hidden, 
@@ -299,6 +311,55 @@ namespace Text_Editor
             };
             _editBox.TextChanged   += OnTextChanged;
             _editBox.SelectionChanged += (s, e) => UpdateStatusBar();
+            _editBox.DragEnter += (s, e) => { e.Effect = e.Data.GetDataPresent(DataFormats.Text) ? DragDropEffects.Copy : DragDropEffects.None; };
+            _editBox.DragDrop  += (s, e) => { if (e.Data.GetDataPresent(DataFormats.Text)) _editBox.SelectedText = e.Data.GetData(DataFormats.Text).ToString(); };
+
+            var ctxMenu = new ContextMenuStrip();
+            var undoItem    = new ToolStripMenuItem("Undo")    { ShortcutKeys = Keys.Control | Keys.Z };
+            var cutItem     = new ToolStripMenuItem("Cut")     { ShortcutKeys = Keys.Control | Keys.X };
+            var copyItem    = new ToolStripMenuItem("Copy")    { ShortcutKeys = Keys.Control | Keys.C };
+            var pasteItem   = new ToolStripMenuItem("Paste")   { ShortcutKeys = Keys.Control | Keys.V };
+            var deleteItem  = new ToolStripMenuItem("Delete")  { ShortcutKeys = Keys.Delete };
+            var selAllItem  = new ToolStripMenuItem("Select All") { ShortcutKeys = Keys.Control | Keys.A };
+
+            undoItem.Click   += (s, e) => OnUndo(s, e);
+            cutItem.Click    += (s, e) => _editBox.Cut();
+            copyItem.Click   += (s, e) => _editBox.Copy();
+            pasteItem.Click  += (s, e) => _editBox.Paste();
+            deleteItem.Click += (s, e) => { if (_editBox.SelectionLength > 0) _editBox.SelectedText = string.Empty; };
+            selAllItem.Click += (s, e) => _editBox.SelectAll();
+
+            undoItem.Click += (s, e) =>
+            {
+                undoItem.Enabled   = _undoStack.Count > 0;
+                cutItem.Enabled    = _editBox.SelectionLength > 0;
+                copyItem.Enabled   = _editBox.SelectionLength > 0;
+                deleteItem.Enabled = _editBox.SelectionLength > 0;
+            };
+            cutItem.Click += (s, e) =>
+            {
+                cutItem.Enabled    = _editBox.SelectionLength > 0;
+                copyItem.Enabled   = _editBox.SelectionLength > 0;
+                deleteItem.Enabled = _editBox.SelectionLength > 0;
+            };
+
+            ctxMenu.Items.AddRange(new ToolStripItem[] {
+                undoItem,
+                new ToolStripSeparator(),
+                cutItem, copyItem, pasteItem, deleteItem,
+                new ToolStripSeparator(),
+                selAllItem
+            });
+
+            ctxMenu.Opening += (s, e) =>
+            {
+                undoItem.Enabled   = _undoStack.Count > 0;
+                cutItem.Enabled    = _editBox.SelectionLength > 0;
+                copyItem.Enabled   = _editBox.SelectionLength > 0;
+                deleteItem.Enabled = _editBox.SelectionLength > 0;
+            };
+
+            _editBox.ContextMenuStrip = ctxMenu;
 
             var editorPanel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(5, 3, 5, 3) };
             editorPanel.Controls.Add(_editBox);
@@ -308,7 +369,8 @@ namespace Text_Editor
             _statusPart0 = new ToolStripStatusLabel("Line 1, Col 1") { AutoSize = true };
             _statusPart1 = new ToolStripStatusLabel("0 lines, 0 chars") { AutoSize = true };
             _statusPart2 = new ToolStripStatusLabel("UTF-8") { AutoSize = true };
-            _statusBar.Items.AddRange(new ToolStripItem[] { _statusPart0, _statusPart1, _statusPart2 });
+            var _statusPart3 = new ToolStripStatusLabel("Ctrl+T: Toggle Toolbar") { AutoSize = true, Spring = true, TextAlign = ContentAlignment.MiddleRight };
+            _statusBar.Items.AddRange(new ToolStripItem[] { _statusPart0, _statusPart1, _statusPart2, _statusPart3 });
             this.Controls.Add(_statusBar);
 
             _statusTimer          = new System.Windows.Forms.Timer { Interval = 500 };
@@ -348,6 +410,8 @@ namespace Text_Editor
                 : RichTextBoxScrollBars.Both;
 
             ApplyTheme();
+
+            _toolbar.Visible = _settings.ToolbarVisible;
         }
 
         private void SaveSettings()
@@ -372,6 +436,7 @@ namespace Text_Editor
             _settings.WordWrap = _wordWrap;
             _settings.FontName = _editBox.Font.Name;
             _settings.FontSize = _editBox.Font.Size;
+            _settings.ToolbarVisible = _toolbar.Visible;
             _settings.Save();
         }
 
@@ -632,7 +697,7 @@ namespace Text_Editor
 
         private void OnSettings(object sender, EventArgs e)
         {
-            using var dlg = new SettingsDialog(_isDarkTheme, _editBox.Font);
+            using var dlg = new SettingsDialog(_isDarkTheme, _editBox.Font, _toolbar.Visible, _settings.RegisterContextMenu);
             if (dlg.ShowDialog(this) == DialogResult.OK)
             {
                 _editBox.Font = dlg.SelectedFont;
@@ -641,8 +706,45 @@ namespace Text_Editor
                     _isDarkTheme = dlg.IsDarkTheme;
                     ApplyTheme();
                 }
+                _toolbar.Visible = dlg.ToolbarVisible;
+                if (_settings.RegisterContextMenu != dlg.RegisterContextMenu)
+                {
+                    _settings.RegisterContextMenu = dlg.RegisterContextMenu;
+                    RegisterContextMenuHandler(dlg.RegisterContextMenu);
+                }
                 SaveSettings();
             }
+        }
+
+        private void ToggleToolbar()
+        {
+            _toolbar.Visible = !_toolbar.Visible;
+            SaveSettings();
+        }
+
+        private static void RegisterContextMenuHandler(bool register)
+        {
+            try
+            {
+                string exePath = Application.ExecutablePath;
+                string iconPath = exePath + ",0";
+                string keyPath = @"*\shell\TextEditor";
+
+                if (register)
+                {
+                    using var key = Microsoft.Win32.Registry.ClassesRoot.CreateSubKey(keyPath);
+                    key.SetValue("", "Open with Text Editor");
+                    key.SetValue("Icon", iconPath);
+
+                    using var cmdKey = Microsoft.Win32.Registry.ClassesRoot.CreateSubKey($@"{keyPath}\command");
+                    cmdKey.SetValue("", $"\"{exePath}\" \"%1\"");
+                }
+                else
+                {
+                    Microsoft.Win32.Registry.ClassesRoot.DeleteSubKeyTree(keyPath, false);
+                }
+            }
+            catch { }
         }
 
         private void ToggleWordWrap()
@@ -734,6 +836,7 @@ namespace Text_Editor
                     case Keys.A: OnSelectAll(sender, e);e.SuppressKeyPress = true; break;
                     case Keys.F: OnFind(sender, e);     e.SuppressKeyPress = true; break;
                     case Keys.G: OnGotoLine(sender, e); e.SuppressKeyPress = true; break;
+                    case Keys.T: ToggleToolbar();       e.SuppressKeyPress = true; break;
                 }
             }
         }
@@ -756,11 +859,15 @@ namespace Text_Editor
     {
         public bool IsDarkTheme { get; private set; }
         public Font SelectedFont { get; private set; }
+        public bool ToolbarVisible { get; private set; }
+        public bool RegisterContextMenu { get; private set; }
 
-        public SettingsDialog(bool currentDarkTheme, Font currentFont)
+        public SettingsDialog(bool currentDarkTheme, Font currentFont, bool toolbarVisible, bool registerContextMenu)
         {
             IsDarkTheme = currentDarkTheme;
             SelectedFont = currentFont;
+            ToolbarVisible = toolbarVisible;
+            RegisterContextMenu = registerContextMenu;
 
             this.Text            = "Settings";
             this.FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -768,17 +875,17 @@ namespace Text_Editor
             this.MinimizeBox     = false;
             this.ShowInTaskbar   = false;
             this.StartPosition   = FormStartPosition.CenterParent;
-            this.Size            = new Size(350, 200);
+            this.Size            = new Size(380, 300);
 
             var lblTheme = new Label { Text = "Theme:", Left = 20, Top = 25, Width = 80 };
-            var cbTheme = new ComboBox { Left = 110, Top = 22, Width = 150, DropDownStyle = ComboBoxStyle.DropDownList };
+            var cbTheme = new ComboBox { Left = 120, Top = 22, Width = 150, DropDownStyle = ComboBoxStyle.DropDownList };
             cbTheme.Items.Add("Light");
             cbTheme.Items.Add("Dark");
             cbTheme.SelectedIndex = IsDarkTheme ? 1 : 0;
 
             var lblFont = new Label { Text = "Font:", Left = 20, Top = 65, Width = 80 };
-            var lblFontName = new Label { Text = $"{SelectedFont.Name}, {SelectedFont.Size}pt", Left = 110, Top = 65, Width = 100 };
-            var btnFont = new Button { Text = "Change...", Left = 220, Top = 60, Width = 80 };
+            var lblFontName = new Label { Text = $"{SelectedFont.Name}, {SelectedFont.Size}pt", Left = 120, Top = 65, Width = 120 };
+            var btnFont = new Button { Text = "Change...", Left = 260, Top = 60, Width = 80 };
             btnFont.Click += (s, e) =>
             {
                 using var fd = new FontDialog { Font = SelectedFont, ShowEffects = true };
@@ -789,14 +896,33 @@ namespace Text_Editor
                 }
             };
 
-            var btnOk = new Button { Text = "OK", Left = 140, Top = 120, Width = 80, DialogResult = DialogResult.OK };
-            var btnCancel = new Button { Text = "Cancel", Left = 230, Top = 120, Width = 80, DialogResult = DialogResult.Cancel };
+            var cbToolbar = new CheckBox
+            {
+                Text = "Show Toolbar",
+                Left = 20, Top = 105, Width = 200,
+                Checked = ToolbarVisible,
+            };
 
-            btnOk.Click += (s, e) => { IsDarkTheme = cbTheme.SelectedIndex == 1; };
+            var cbContextMenu = new CheckBox
+            {
+                Text = "\"Open with Text Editor\" in right-click menu",
+                Left = 20, Top = 135, Width = 320,
+                Checked = RegisterContextMenu,
+            };
+
+            var btnOk = new Button { Text = "OK", Left = 160, Top = 210, Width = 80, DialogResult = DialogResult.OK };
+            var btnCancel = new Button { Text = "Cancel", Left = 260, Top = 210, Width = 80, DialogResult = DialogResult.Cancel };
+
+            btnOk.Click += (s, e) =>
+            {
+                IsDarkTheme = cbTheme.SelectedIndex == 1;
+                ToolbarVisible = cbToolbar.Checked;
+                RegisterContextMenu = cbContextMenu.Checked;
+            };
 
             this.AcceptButton = btnOk;
             this.CancelButton = btnCancel;
-            this.Controls.AddRange(new Control[] { lblTheme, cbTheme, lblFont, lblFontName, btnFont, btnOk, btnCancel });
+            this.Controls.AddRange(new Control[] { lblTheme, cbTheme, lblFont, lblFontName, btnFont, cbToolbar, cbContextMenu, btnOk, btnCancel });
 
             ApplyThemeToDialog(this, IsDarkTheme);
         }
@@ -813,6 +939,10 @@ namespace Text_Editor
                     {
                         c.BackColor = Color.FromArgb(45, 45, 48);
                         c.ForeColor = Color.White;
+                    }
+                    else if (c is CheckBox cb)
+                    {
+                        cb.ForeColor = Color.White;
                     }
                     else if (c is Button b)
                     {
@@ -833,6 +963,10 @@ namespace Text_Editor
                     {
                         c.BackColor = SystemColors.Window;
                         c.ForeColor = SystemColors.WindowText;
+                    }
+                    else if (c is CheckBox cb)
+                    {
+                        cb.ForeColor = SystemColors.ControlText;
                     }
                     else if (c is Button b)
                     {
