@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Windows.Forms;
@@ -211,9 +212,168 @@ namespace Text_Editor
         public override Color ButtonCheckedHighlightBorder => Color.Transparent;
     }
 
+    /// <summary>
+    /// RichTextBox dengan seleksi teks karakter-per-karakter yang benar.
+    ///
+    /// RichTextBox bawaan WinForms memiliki dua masalah snap-select:
+    ///   1. Auto Word Select: saat drag dalam satu kata, langsung snap ke seluruh kata.
+    ///   2. Cross-space snap: saat drag melewati spasi antar kata, snap ke kedua kata
+    ///      di kiri dan kanan spasi sekaligus.
+    ///
+    /// Fix: matikan ECO_AUTOWORDSELECTION via EM_SETOPTIONS, lalu override WndProc
+    /// untuk intercept WM_LBUTTONDOWN dan WM_MOUSEMOVE. Pada mouse-drag, kita hitung
+    /// sendiri char index dari posisi mouse dan set selection secara manual,
+    /// sehingga RichEdit internal word-boundary logic sama sekali tidak jalan.
+    /// </summary>
+    public class NoAutoWordSelectRichTextBox : RichTextBox
+    {
+        // Win32 constants
+        private const int ECO_AUTOWORDSELECTION = 0x00000001;
+        private const int EM_SETOPTIONS         = 0x044D;
+        private const int ECOOP_XOR             = 0x0002;
+
+        private const int WM_LBUTTONDOWN        = 0x0201;
+        private const int WM_LBUTTONDBLCLK      = 0x0203;
+        private const int WM_MOUSEMOVE          = 0x0200;
+        private const int WM_LBUTTONUP          = 0x0202;
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto)]
+        private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        // State untuk manual drag-select
+        private bool _manualDrag = false;
+        private int  _dragAnchor = -1;
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            SendMessage(this.Handle,
+                        EM_SETOPTIONS,
+                        (IntPtr)ECOOP_XOR,
+                        (IntPtr)ECO_AUTOWORDSELECTION);
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            switch (m.Msg)
+            {
+                case WM_LBUTTONDOWN:
+                {
+                    int charIdx = CharIndexFromLParam(m.LParam);
+                    if (charIdx >= 0)
+                    {
+                        _dragAnchor = charIdx;
+                        _manualDrag = true;
+
+                        if (!this.Focused) this.Focus();
+
+                        this.SelectionStart  = charIdx;
+                        this.SelectionLength = 0;
+                        this.Capture = true;
+
+                        // Jangan teruskan ke base agar RichEdit tidak jalankan
+                        // word-boundary logic-nya sendiri
+                        m.Result = IntPtr.Zero;
+                        return;
+                    }
+                    break;
+                }
+
+                case WM_MOUSEMOVE:
+                {
+                    if (_manualDrag && _dragAnchor >= 0 &&
+                        (m.WParam.ToInt32() & 0x0001) != 0) // MK_LBUTTON
+                    {
+                        int charIdx = CharIndexFromLParam(m.LParam);
+                        if (charIdx >= 0)
+                        {
+                            int start  = Math.Min(_dragAnchor, charIdx);
+                            int length = Math.Abs(charIdx - _dragAnchor);
+                            this.SelectionStart  = start;
+                            this.SelectionLength = length;
+                        }
+                        m.Result = IntPtr.Zero;
+                        return;
+                    }
+                    break;
+                }
+
+                case WM_LBUTTONUP:
+                {
+                    if (_manualDrag)
+                    {
+                        _manualDrag  = false;
+                        _dragAnchor  = -1;
+                        this.Capture = false;
+                        m.Result     = IntPtr.Zero;
+                        return;
+                    }
+                    break;
+                }
+
+                case WM_LBUTTONDBLCLK:
+                {
+                    // Double-click: biarkan RichEdit select satu kata (behavior normal)
+                    _manualDrag = false;
+                    _dragAnchor = -1;
+                    break;
+                }
+            }
+
+            base.WndProc(ref m);
+        }
+
+        /// <summary>
+        /// Konversi posisi mouse (client coords dari lParam) ke char index yang tepat.
+        ///
+        /// Masalah: GetCharIndexFromPosition selalu clamp ke karakter yang ADA,
+        /// tidak pernah mengembalikan TextLength (posisi setelah karakter terakhir).
+        /// Akibatnya klik di sebelah kanan karakter terakhir selalu jatuh di karakter
+        /// terakhir, bukan di posisi end-of-text.
+        ///
+        /// Fix: setelah dapat char index, ambil posisi pixel karakter tersebut dan
+        /// karakter berikutnya. Jika posisi X mouse berada di sebelah kanan titik
+        /// tengah karakter itu, increment index-nya.
+        /// </summary>
+        private int CharIndexFromLParam(IntPtr lParam)
+        {
+            int   val    = lParam.ToInt32();
+            short mouseX = (short)(val & 0xFFFF);
+            short mouseY = (short)((val >> 16) & 0xFFFF);
+            var   pt     = new Point(mouseX, mouseY);
+
+            int idx = this.GetCharIndexFromPosition(pt);
+
+            // Dapatkan posisi pixel karakter idx
+            Point charPos = this.GetPositionFromCharIndex(idx);
+
+            // Hitung midpoint X karakter: bandingkan dengan posisi char berikutnya
+            int charMidX;
+            if (idx + 1 <= this.TextLength)
+            {
+                Point nextPos = this.GetPositionFromCharIndex(
+                    Math.Min(idx + 1, this.TextLength));
+                // Hanya increment jika char berikutnya masih di baris yang sama
+                if (nextPos.Y == charPos.Y)
+                    charMidX = (charPos.X + nextPos.X) / 2;
+                else
+                    charMidX = int.MaxValue; // akhir baris, jangan increment
+            }
+            else
+            {
+                charMidX = int.MaxValue; // sudah di char terakhir, jangan increment
+            }
+
+            if (mouseX > charMidX)
+                idx = Math.Min(idx + 1, this.TextLength);
+
+            return Math.Max(0, Math.Min(idx, this.TextLength));
+        }
+    }
+
     public class MainForm : Form
     {
-        private RichTextBox _editBox;
+        private NoAutoWordSelectRichTextBox _editBox;
         private ToolStrip   _toolbar;
         private StatusStrip _statusBar;
         private ToolStripStatusLabel _statusPart0;
@@ -295,7 +455,7 @@ else this.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
 
             this.Controls.Add(_toolbar);
 
-            _editBox = new RichTextBox
+            _editBox = new NoAutoWordSelectRichTextBox
             {
                 Dock          = DockStyle.Fill,
                 AcceptsTab    = true,
