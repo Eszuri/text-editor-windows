@@ -5,10 +5,54 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using System.Text;
+using System.Text.Json;
 using System.Windows.Forms;
 
 namespace Text_Editor
 {
+    public class AppSettings
+    {
+        public int WindowX { get; set; } = 100;
+        public int WindowY { get; set; } = 100;
+        public int WindowWidth { get; set; } = 900;
+        public int WindowHeight { get; set; } = 600;
+        public bool IsMaximized { get; set; } = false;
+        public bool IsDarkTheme { get; set; } = true;
+        public bool WordWrap { get; set; } = true;
+        public string FontName { get; set; } = "Consolas";
+        public float FontSize { get; set; } = 10f;
+
+        private static readonly string SettingsDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "TextEditor");
+        private static readonly string SettingsPath = Path.Combine(SettingsDir, "settings.json");
+
+        public static AppSettings Load()
+        {
+            try
+            {
+                if (File.Exists(SettingsPath))
+                {
+                    string json = File.ReadAllText(SettingsPath);
+                    return JsonSerializer.Deserialize<AppSettings>(json) ?? new AppSettings();
+                }
+            }
+            catch { }
+            return new AppSettings();
+        }
+
+        public void Save()
+        {
+            try
+            {
+                Directory.CreateDirectory(SettingsDir);
+                string json = JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(SettingsPath, json);
+            }
+            catch { }
+        }
+    }
+
     struct TextState
     {
         public string Text;
@@ -182,6 +226,7 @@ namespace Text_Editor
 
         private bool   _isDarkTheme  = true;
         private bool   _ignoreChange = false;
+        private AppSettings _settings;
 
         private readonly Stack<TextState> _undoStack = new Stack<TextState>();
         private readonly Stack<TextState> _redoStack = new Stack<TextState>();
@@ -189,7 +234,12 @@ namespace Text_Editor
 
         public MainForm(string[] args)
         {
+            _settings = AppSettings.Load();
+            _isDarkTheme = _settings.IsDarkTheme;
+            _wordWrap = _settings.WordWrap;
+
             InitializeUI();
+            ApplySettings();
             UpdateTitle();
             UpdateStatusBar();
 
@@ -202,7 +252,6 @@ namespace Text_Editor
         private void InitializeUI()
         {
             this.Text            = "Untitled - Text Editor";
-            this.Size            = new Size(900, 600);
             this.MinimumSize     = new Size(400, 300);
 
             _toolbar = new ToolStrip { 
@@ -272,6 +321,58 @@ namespace Text_Editor
             editorPanel.BringToFront();
             
             ApplyTheme();
+        }
+
+        private void ApplySettings()
+        {
+            var screen = Screen.FromPoint(new Point(_settings.WindowX, _settings.WindowY));
+            int x = Math.Max(screen.WorkingArea.Left, Math.Min(_settings.WindowX, screen.WorkingArea.Right - 200));
+            int y = Math.Max(screen.WorkingArea.Top, Math.Min(_settings.WindowY, screen.WorkingArea.Bottom - 200));
+            int w = Math.Max(400, Math.Min(_settings.WindowWidth, screen.WorkingArea.Width));
+            int h = Math.Max(300, Math.Min(_settings.WindowHeight, screen.WorkingArea.Height));
+
+            this.Location = new Point(x, y);
+            this.Size = new Size(w, h);
+
+            if (_settings.IsMaximized)
+                this.WindowState = FormWindowState.Maximized;
+
+            try { _editBox.Font = new Font(_settings.FontName, _settings.FontSize); }
+            catch { _editBox.Font = GetDefaultFont(); }
+
+            _wordWrap = _settings.WordWrap;
+            _editBox.WordWrap = _wordWrap;
+            _wordWrapBtn.Checked = _wordWrap;
+            _editBox.ScrollBars = _wordWrap
+                ? RichTextBoxScrollBars.Vertical
+                : RichTextBoxScrollBars.Both;
+
+            ApplyTheme();
+        }
+
+        private void SaveSettings()
+        {
+            if (this.WindowState == FormWindowState.Normal)
+            {
+                _settings.WindowX = this.Location.X;
+                _settings.WindowY = this.Location.Y;
+                _settings.WindowWidth = this.Size.Width;
+                _settings.WindowHeight = this.Size.Height;
+            }
+            else
+            {
+                var bounds = this.RestoreBounds;
+                _settings.WindowX = bounds.X;
+                _settings.WindowY = bounds.Y;
+                _settings.WindowWidth = bounds.Width;
+                _settings.WindowHeight = bounds.Height;
+            }
+            _settings.IsMaximized = this.WindowState == FormWindowState.Maximized;
+            _settings.IsDarkTheme = _isDarkTheme;
+            _settings.WordWrap = _wordWrap;
+            _settings.FontName = _editBox.Font.Name;
+            _settings.FontSize = _editBox.Font.Size;
+            _settings.Save();
         }
 
         public void ApplyTheme()
@@ -540,6 +641,7 @@ namespace Text_Editor
                     _isDarkTheme = dlg.IsDarkTheme;
                     ApplyTheme();
                 }
+                SaveSettings();
             }
         }
 
@@ -639,6 +741,7 @@ namespace Text_Editor
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             if (!ConfirmSave()) e.Cancel = true;
+            else SaveSettings();
             base.OnFormClosing(e);
         }
 
